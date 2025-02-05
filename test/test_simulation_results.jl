@@ -1011,6 +1011,62 @@ function load_pf_export(root, export_subdir)
     set_units_base_system!(sys, "NATURAL_UNITS")
     return sys
 end
+# expand 
+# :active_power => [ActivePowerVariable, PowerOutput, ActivePowerTimeSeriesParameter]
+# in PF_INPUT_KEY_PRECEDENCES into
+# :active_power => [(VariableKey, ActivePowerVariable),
+#                    (AuxVarKey, PowerOutput), 
+#                    (ActivePowerTimeSeriesParameter, ActivePowerTimeSeriesParameter)]
+# TODO better way? Can I write CompareToExported such that I don't need these?
+pf_input_key_precedenced_typed = Dict{Symbol, Vector{Tuple{Type, Type}}}()
+for (varName, prefs) in PSI.PF_INPUT_KEY_PRECEDENCES
+    pf_input_key_precedenced_typed[varName] = Vector{Tuple{Type, Type}}()
+    for keyName in prefs
+        for keyType in subtypes(IS.Optimization.OptimizationContainerKey)
+            try
+                keyType(keyName, ThermalStandard) # TODO is ThermalStandard always suitable?
+            catch
+            else 
+                push!(pf_input_key_precedenced_typed[varName], (keyType, keyName))
+                break
+            end
+        end
+    end
+end
+# untested with anything besides :active_power
+function CompareToExported(varNames::Vector{Symbol}, sys::PSY.System, results::SimulationResults,
+                            validateOn::Vector{Tuple{Int, String}}, pf_path::String)
+    const VARNAME_TO_GETTER = Dict(:active_power=>get_active_power, ) #, :reactive_power=>get_reactive_power,
+                            # :voltage_angle=>get_angle, :voltage_magnitude=>get_magnitude)
+    results_ed = get_decision_problem_results(results, "ED")
+    genTypes = Set{DataType}(typeof.(get_components(Generator, sys)))
+    for (genType, varName) in Iterators.product(genTypes, varNames)
+        # work out how far down each generator falls in preferences,
+        # by seeing if a call to read_reads_with_keys error.
+        # TODO better way?
+        for (prefType, prefKey) in pf_input_key_precedenced_typed[varName]
+            # resultKey might be PSI.VariableKey(ActivePowerVariable, ThermalStandard)
+            resultKey = prefType(prefKey, genType)
+            try
+                # these calls lead to repetitive warning/info messages.
+                results = PSI.read_results_with_keys(results_ed,[resultKey])[resultKey]
+            catch
+            else
+                for (rowIndex, file) in validateOn
+                    exported = load_pf_export(pf_path, file)
+                    compNames = get_name.(get_components(genType, sys))
+                    exportedComps = [first(get_components_by_name(Component, exported, compName))
+                                        for compName in compNames]
+                    # calling getproperty(component, :active_power) leads to unit issues.
+                    exportedPowers = VARNAME_TO_GETTER[varName].(exportedComps)
+                    simulationPowers = results[rowIndex, compNames]
+                    @test all(values(simulationPowers) .≈ exportedPowers)
+                end
+                break
+            end
+        end
+    end
+end
 
 @testset "Test power flow in the loop" begin
     file_path = mktempdir(; cleanup = true)
@@ -1034,30 +1090,12 @@ end
         ),
     )
     results = SimulationResults(sim)
-    results_ed = get_decision_problem_results(results, "ED")
-    thermal_results = first(
-        values(
-            PSI.read_results_with_keys(results_ed,
-                [PSI.VariableKey(ActivePowerVariable, ThermalStandard)]),
-        ),
-    )
-    first_result = first(thermal_results)
-    last_result = last(thermal_results)
-
+    # timesteps to validate: first, last, and a random one.
+    randomYear, randomMonth = rand(1:48), rand(1:12)
+    randomTimestep, randomFile = 12*(randomYear-1) + randomMonth, "export_$(randomYear)_$(randomMonth)"
+    rowIndexFilePairs = [(1, "export_1_1"),
+                        (randomTimestep, randomFile),
+                        (48*12, "export_48_12")]
+    CompareToExported([:active_power], c_sys5_hy_ed, results, rowIndexFilePairs, pf_path)
     @test length(filter(x -> isdir(joinpath(pf_path, x)), readdir(pf_path))) == 48 * 12
-    first_export = load_pf_export(pf_path, "export_1_1")
-    last_export = load_pf_export(pf_path, "export_48_12")
-
-    # Test that the active powers written to the first and last exports line up with the real simulation results
-    for gen_name in get_name.(get_components(ThermalStandard, c_sys5_hy_ed))
-        this_first_result = first_result[gen_name]
-        this_first_exported =
-            get_active_power(get_component(ThermalStandard, first_export, gen_name))
-        @test isapprox(this_first_result, this_first_exported)
-
-        this_last_result = last_result[gen_name]
-        this_last_exported =
-            get_active_power(get_component(ThermalStandard, last_export, gen_name))
-        @test isapprox(this_last_result, this_last_exported)
-    end
 end
