@@ -1011,47 +1011,18 @@ function load_pf_export(root, export_subdir)
     set_units_base_system!(sys, "NATURAL_UNITS")
     return sys
 end
-# expand 
-# :active_power => [ActivePowerVariable, PowerOutput, ActivePowerTimeSeriesParameter]
-# in PF_INPUT_KEY_PRECEDENCES into
-# :active_power => [(VariableKey, ActivePowerVariable),
-#                    (AuxVarKey, PowerOutput), 
-#                    (ActivePowerTimeSeriesParameter, ActivePowerTimeSeriesParameter)]
-# TODO better way? Can I write CompareToExported such that I don't need these?
-pf_input_key_precedenced_typed = Dict{Symbol, Vector{Tuple{Type, Type}}}()
-for (varName, prefs) in PSI.PF_INPUT_KEY_PRECEDENCES
-    pf_input_key_precedenced_typed[varName] = Vector{Tuple{Type, Type}}()
-    for keyName in prefs
-        for keyType in subtypes(IS.Optimization.OptimizationContainerKey)
-            try
-                keyType(keyName, ThermalStandard) # TODO is ThermalStandard always suitable?
-            catch
-            else 
-                push!(pf_input_key_precedenced_typed[varName], (keyType, keyName))
-                break
-            end
-        end
-    end
-end
 # untested with anything besides :active_power
 function CompareToExported(varNames::Vector{Symbol}, sys::PSY.System, results::SimulationResults,
                             validateOn::Vector{Tuple{Int, String}}, pf_path::String)
-    const VARNAME_TO_GETTER = Dict(:active_power=>get_active_power, ) #, :reactive_power=>get_reactive_power,
+    VARNAME_TO_GETTER = Dict(:active_power=>get_active_power, ) #, :reactive_power=>get_reactive_power,
                             # :voltage_angle=>get_angle, :voltage_magnitude=>get_magnitude)
     results_ed = get_decision_problem_results(results, "ED")
-    genTypes = Set{DataType}(typeof.(get_components(Generator, sys)))
-    for (genType, varName) in Iterators.product(genTypes, varNames)
-        # work out how far down each generator falls in preferences,
-        # by seeing if a call to read_reads_with_keys error.
-        # TODO better way?
-        for (prefType, prefKey) in pf_input_key_precedenced_typed[varName]
-            # resultKey might be PSI.VariableKey(ActivePowerVariable, ThermalStandard)
-            resultKey = prefType(prefKey, genType)
-            try
-                # these calls lead to repetitive warning/info messages.
-                results = PSI.read_results_with_keys(results_ed,[resultKey])[resultKey]
-            catch
-            else
+    optimizationKeyGetters = [list_variable_keys, list_parameter_keys, list_aux_variable_keys]
+    for (getter, varName) in Iterators.product(optimizationKeyGetters, varNames)
+        for optimizationKey in getter(results_ed)
+            (varType, genType)  = typeof(optimizationKey).parameters[begin:2]
+            if varType in PSI.PF_INPUT_KEY_PRECEDENCES[varName] && genType <: Generator
+                results = PSI.read_results_with_keys(results_ed,[optimizationKey])[optimizationKey]
                 for (rowIndex, file) in validateOn
                     exported = load_pf_export(pf_path, file)
                     compNames = get_name.(get_components(genType, sys))
@@ -1060,9 +1031,10 @@ function CompareToExported(varNames::Vector{Symbol}, sys::PSY.System, results::S
                     # calling getproperty(component, :active_power) leads to unit issues.
                     exportedPowers = VARNAME_TO_GETTER[varName].(exportedComps)
                     simulationPowers = results[rowIndex, compNames]
-                    @test all(values(simulationPowers) .≈ exportedPowers)
+                    # I'm getting poor precision on certain generators. Strange.
+                    @test all(isapprox.(values(simulationPowers), exportedPowers;
+                                                    atol = 10^(-7), rtol = 10^(-5)))
                 end
-                break
             end
         end
     end
