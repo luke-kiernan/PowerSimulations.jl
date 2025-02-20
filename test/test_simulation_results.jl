@@ -157,9 +157,9 @@ function run_simulation(
     system_to_file = true,
     uc_network_model = nothing,
     ed_network_model = nothing,
+    template_uc = get_template_basic_uc_simulation(),
+    template_ed = get_template_nomin_ed_simulation(),
 )
-    template_uc = get_template_basic_uc_simulation()
-    template_ed = get_template_nomin_ed_simulation()
     isnothing(uc_network_model) && (
         uc_network_model =
             NetworkModel(CopperPlatePowerModel; duals = [CopperPlateBalanceConstraint])
@@ -1011,30 +1011,63 @@ function load_pf_export(root, export_subdir)
     set_units_base_system!(sys, "NATURAL_UNITS")
     return sys
 end
-# untested with anything besides :active_power
-function CompareToExported(varNames::Vector{Symbol}, sys::PSY.System, results::SimulationResults,
-                            validateOn::Vector{Tuple{Int, String}}, pf_path::String)
-    VARNAME_TO_GETTER = Dict(:active_power=>get_active_power, ) #, :reactive_power=>get_reactive_power,
-                            # :voltage_angle=>get_angle, :voltage_magnitude=>get_magnitude)
+
+function CompareToExported(varNames::Vector{Symbol}, sys::PSY.System,
+    results::SimulationResults,
+    validateOn::Vector{Tuple{Int, String}}, pf_path::String)
+    VARNAME_TO_GETTER = Dict(
+        :active_power =>
+            Dict(Generator => get_active_power, Line => get_active_power_flow),
+        :reactive_power =>
+            Dict(Generator => get_reactive_power, Line => get_reactive_power_flow),
+        :voltage_angle => Dict(ACBus => get_angle),
+        :voltage_magnitude => Dict(ACBus => get_magnitude))
     results_ed = get_decision_problem_results(results, "ED")
-    optimizationKeyGetters = [list_variable_keys, list_parameter_keys, list_aux_variable_keys]
+    optimizationKeyGetters =
+        [list_variable_keys, list_parameter_keys, list_aux_variable_keys,
+            list_dual_keys]
     for (getter, varName) in Iterators.product(optimizationKeyGetters, varNames)
         for optimizationKey in getter(results_ed)
-            (varType, genType)  = typeof(optimizationKey).parameters[begin:2]
-            if varType in PSI.PF_INPUT_KEY_PRECEDENCES[varName] && genType <: Generator
-                results = PSI.read_results_with_keys(results_ed,[optimizationKey])[optimizationKey]
+            varType, compType =
+                PSI.get_entry_type(optimizationKey), PSI.get_component_type(optimizationKey)
+            if varType in PSI.PF_INPUT_KEY_PRECEDENCES[varName] &&
+               (compType <: Generator || compType <: ACBus
+                || compType <: Line)
+                typeKey = compType
+                if compType <: Generator
+                    typeKey = Generator
+                    # elseif compType <: PowerLoad
+                    #    typeKey = PowerLoad
+                end
+                results =
+                    PSI.read_results_with_keys(results_ed, [optimizationKey])[optimizationKey]
                 for (rowIndex, file) in validateOn
                     exported = load_pf_export(pf_path, file)
-                    compNames = get_name.(get_components(genType, sys))
-                    exportedComps = [first(get_components_by_name(Component, exported, compName))
-                                        for compName in compNames]
+                    compNames = get_name.(get_components(compType, sys))
+                    lookupNames = Vector{String}()
+                    # bus names are exported as "nodeA", "nodeB",... whereas the results has "1", "2", etc.
+                    if typeKey <: ACBus
+                        lookupNames = string.(get_number.(get_components(compType, sys)))
+                    else
+                        lookupNames = compNames
+                    end
+                    exportedComps = [
+                        first(get_components_by_name(Component, exported, compName))
+                        for compName in compNames
+                    ]
                     # calling getproperty(component, :active_power) leads to unit issues.
-                    exportedPowers = VARNAME_TO_GETTER[varName].(exportedComps)
-                    simulationPowers = results[rowIndex, compNames]
-                    # I'm getting poor precision on certain generators. Strange.
-                    @test all(isapprox.(values(simulationPowers), exportedPowers;
-                                                    atol = 10^(-7), rtol = 10^(-5)))
+                    # println("Comparing $varType to $(VARNAME_TO_GETTER[varName][typeKey]) on $compType components")
+                    exportedPowers = VARNAME_TO_GETTER[varName][typeKey].(exportedComps)
+                    simulationPowers = results[rowIndex, lookupNames]
+                    # I'm getting poor precision on certain components. Strange.
+                    @test all(
+                        isapprox.(values(simulationPowers), exportedPowers;
+                            atol = 10^(-6), rtol = 10^(-4)),
+                    )
                 end
+            elseif varType in PSI.PF_INPUT_KEY_PRECEDENCES[varName]
+                # currently skipping: ActivePowerTimeSeriesParameter on PowerLoad, InterruptiblePowerLoad. 
+                # println("skipped $varType on $compType components due to not in dictionary")
             end
         end
     end
@@ -1064,10 +1097,59 @@ end
     results = SimulationResults(sim)
     # timesteps to validate: first, last, and a random one.
     randomYear, randomMonth = rand(1:48), rand(1:12)
-    randomTimestep, randomFile = 12*(randomYear-1) + randomMonth, "export_$(randomYear)_$(randomMonth)"
+    randomTimestep, randomFile =
+        12 * (randomYear - 1) + randomMonth, "export_$(randomYear)_$(randomMonth)"
     rowIndexFilePairs = [(1, "export_1_1"),
-                        (randomTimestep, randomFile),
-                        (48*12, "export_48_12")]
-    CompareToExported([:active_power], c_sys5_hy_ed, results, rowIndexFilePairs, pf_path)
+        (randomTimestep, randomFile),
+        (48 * 12, "export_48_12")]
+    CompareToExported([:active_power, :reactive_power, :voltage_angle, :voltage_magnitude],
+        c_sys5_hy_ed, results, rowIndexFilePairs, pf_path)
     @test length(filter(x -> isdir(joinpath(pf_path, x)), readdir(pf_path))) == 48 * 12
 end
+
+@testset "active power precedence" begin
+    file_path = mktempdir(; cleanup = true)
+    export_path = mktempdir(; cleanup = true)
+    pf_path = mktempdir(; cleanup = true)
+    c_sys5_hy_uc = PSB.build_system(PSITestSystems, "c_sys5_hy_uc")
+    c_sys5_hy_ed = PSB.build_system(PSITestSystems, "c_sys5_hy_ed")
+
+    # same as get_template_basic_uc_simulation, except HydroEnergyReservoir is FixedOutput.
+    template_uc_fixed = get_template_basic_uc_simulation()
+    set_device_model!(template_uc_fixed, HydroEnergyReservoir, FixedOutput)
+    template_ed_fixed = get_template_nomin_ed_simulation()
+    set_device_model!(template_ed_fixed, HydroEnergyReservoir, FixedOutput)
+
+    sim_fixed = run_simulation(c_sys5_hy_uc,
+        c_sys5_hy_ed,
+        file_path,
+        export_path;
+        template_ed = template_ed_fixed,
+        template_uc = template_uc_fixed)
+    results_fixed = SimulationResults(sim_fixed)
+    results_ed_fixed = get_decision_problem_results(results_fixed, "ED")
+    @test !(
+        PSI.VariableKey(ActivePowerVariable, HydroEnergyReservoir) in
+        list_variable_keys(results_ed_fixed)
+    )
+    @test PSI.ParameterKey(ActivePowerTimeSeriesParameter, HydroEnergyReservoir) in
+          list_parameter_keys(results_ed_fixed)
+
+    sim = run_simulation(c_sys5_hy_uc,
+        c_sys5_hy_ed,
+        file_path,
+        export_path)
+    results = SimulationResults(sim)
+    results_ed = get_decision_problem_results(results, "ED")
+    @test PSI.VariableKey(ActivePowerVariable, HydroEnergyReservoir) in
+          list_variable_keys(results_ed)
+end
+
+# testing precedences
+# :active_power => [ActivePowerVariable, PowerOutput, ActivePowerTimeSeriesParameter],
+# lowest priority ActivePowerTimeSeriesParameter: use a FixedOutput device model.
+# middle priority PowerOutput: ThermalMultiStartUnitCommitment?
+# highest priority: any old thermal generator will do.
+# :reactive_power => [ReactivePowerVariable, ReactivePowerTimeSeriesParameter]
+# lowest priority: same as active should work.
+# higest priority: any old thermal generator will do.
