@@ -5,7 +5,7 @@ function construct_device!(
     device_model::DeviceModel{T, FixedOutput},
     network_model::NetworkModel{<:PM.AbstractActivePowerModel},
 ) where {T <: PSY.ThermalGen}
-    devices = get_available_components(model, sys)
+    devices = get_available_components(device_model, sys)
     add_parameters!(container, ActivePowerTimeSeriesParameter, devices, device_model)
     add_to_expression!(
         container,
