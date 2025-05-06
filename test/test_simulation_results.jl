@@ -1016,7 +1016,7 @@ read_result_names(results, key::PSI.OptimizationContainerKey) =
     Set(names(only(values(PSI.read_results_with_keys(results, [key])))[!, Not(:DateTime)]))
 
 @testset "Test AC power flow in the loop: small system UCED, PSS/E export" for calculate_loss_factors in
-                                                                               (true, false)
+                                                                               (true, false), calculate_initial_residual in (true, false)
     file_path = mktempdir(; cleanup = true)
     export_path = mktempdir(; cleanup = true)
     pf_path = mktempdir(; cleanup = true)
@@ -1035,6 +1035,7 @@ read_result_names(results, key::PSI.OptimizationContainerKey) =
             ACPowerFlow(;
                 exporter = PSSEExportPowerFlow(:v33, pf_path; write_comments = true),
                 calculate_loss_factors = calculate_loss_factors,
+                calculate_initial_residual = calculate_initial_residual,
             ),
         ),
     )
@@ -1051,6 +1052,7 @@ read_result_names(results, key::PSI.OptimizationContainerKey) =
 
     available_aux_variables = list_aux_variable_keys(results_ed)
     loss_factors_aux_var_key = PSI.AuxVarKey(PowerFlowLossFactors, ACBus)
+    initial_residual_aux_var_keys = [PSI.AuxVarKey(PowerFlowInitialResidualP, ACBus), PSI.AuxVarKey(PowerFlowInitialResidualQ, ACBus)]
 
     # here we check if the loss factors are stored in the results, the values are tested in PowerFlows.jl
     if calculate_loss_factors
@@ -1065,6 +1067,15 @@ read_result_names(results, key::PSI.OptimizationContainerKey) =
         @test nrow(loss_factors) == 48 * 12
     else
         @test loss_factors_aux_var_key ∉ available_aux_variables
+    end
+    if calculate_initial_residual
+        @test all(x in available_aux_variables for x in initial_residual_aux_var_keys)
+        results = PSI.read_results_with_keys(results_ed, initial_residual_aux_var_keys)
+        @test !isnothing(results[initial_residual_aux_var_keys[1]])
+        @test !isnothing(results[initial_residual_aux_var_keys[2]])
+    else
+        @test !(initial_residual_aux_var_keys[1] in available_aux_variables)
+        @test !(initial_residual_aux_var_keys[2] in available_aux_variables)
     end
 
     @test length(filter(x -> isdir(joinpath(pf_path, x)), readdir(pf_path))) == 48 * 12

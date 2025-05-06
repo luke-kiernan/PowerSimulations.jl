@@ -153,12 +153,16 @@ branch_aux_vars(::PFS.vPTDFPowerFlowData) =
 branch_aux_vars(::PFS.PSSEExporter) = DataType[]
 
 # Same for bus aux vars
-bus_aux_vars(data::PFS.ACPowerFlowData) =
-    if data.calculate_loss_factors
-        [PowerFlowVoltageAngle, PowerFlowVoltageMagnitude, PowerFlowLossFactors]
-    else
-        [PowerFlowVoltageAngle, PowerFlowVoltageMagnitude]
+function bus_aux_vars(data::PFS.ACPowerFlowData)
+    ac_bus_aux_vars = [PowerFlowVoltageAngle, PowerFlowVoltageMagnitude]
+    data.calculate_loss_factors && push!(ac_bus_aux_vars, PowerFlowLossFactors)
+    if data.calculate_initial_residual
+        push!(ac_bus_aux_vars, PowerFlowInitialResidualP)
+        push!(ac_bus_aux_vars, PowerFlowInitialResidualQ)
     end
+    return ac_bus_aux_vars
+end
+
 bus_aux_vars(::PFS.ABAPowerFlowData) = [PowerFlowVoltageAngle]
 bus_aux_vars(::PFS.PTDFPowerFlowData) = DataType[]
 bus_aux_vars(::PFS.vPTDFPowerFlowData) = DataType[]
@@ -416,6 +420,8 @@ calculate_aux_variable_value!(::OptimizationContainer,
     ::AuxVarKey{T, <:Any} where {T <: PowerFlowAuxVariableType},
     ::PSY.System, ::PowerFlowEvaluationData{PFS.PSSEExporter}) = nothing
 
+# this seems redundant--could we store the results grouped by bus, not by 
+# variable type?
 _get_pf_result(::Type{PowerFlowVoltageAngle}, pf_data::PFS.PowerFlowData) =
     PFS.get_bus_angles(pf_data)
 _get_pf_result(::Type{PowerFlowVoltageMagnitude}, pf_data::PFS.PowerFlowData) =
@@ -429,7 +435,11 @@ _get_pf_result(::Type{PowerFlowLineActivePowerFromTo}, pf_data::PFS.PowerFlowDat
 _get_pf_result(::Type{PowerFlowLineActivePowerToFrom}, pf_data::PFS.PowerFlowData) =
     PFS.get_branch_activepower_flow_to_from(pf_data)
 _get_pf_result(::Type{PowerFlowLossFactors}, pf_data::PFS.PowerFlowData) =
-    pf_data.loss_factors
+    PFS.get_loss_factors(pf_data)
+_get_pf_result(::Type{PowerFlowInitialResidualP}, pf_data::PFS.PowerFlowData) =
+    PFS.get_initial_residual_p(pf_data)
+_get_pf_result(::Type{PowerFlowInitialResidualQ}, pf_data::PFS.PowerFlowData) =
+    PFS.get_initial_residual_q(pf_data)
 
 _get_pf_lookup(::Type{<:PSY.Bus}, pf_data::PFS.PowerFlowData) = PFS.get_bus_lookup(pf_data)
 _get_pf_lookup(::Type{<:PSY.Branch}, pf_data::PFS.PowerFlowData) =

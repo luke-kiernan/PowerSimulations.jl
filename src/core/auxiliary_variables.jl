@@ -53,6 +53,12 @@ Auxiliary Variable for the loss factors from AC power flow evaluation that are c
 """
 struct PowerFlowLossFactors <: PowerFlowAuxVariableType end
 
+"""
+Auxiliary Variable for the initial residual at each bus
+"""
+struct PowerFlowInitialResidualP <: PowerFlowAuxVariableType end
+struct PowerFlowInitialResidualQ <: PowerFlowAuxVariableType end
+
 convert_result_to_natural_units(::Type{PowerOutput}) = true
 convert_result_to_natural_units(
     ::Type{
