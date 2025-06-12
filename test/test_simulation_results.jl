@@ -1016,7 +1016,10 @@ read_result_names(results, key::PSI.OptimizationContainerKey) =
     Set(names(only(values(PSI.read_results_with_keys(results, [key])))[!, Not(:DateTime)]))
 
 @testset "Test AC power flow in the loop: small system UCED, PSS/E export" for calculate_loss_factors in
-                                                                               (true, false), calculate_initial_residual in (true, false)
+                                                                               (
+        true,
+        false,
+    ), calculate_initial_residual in (true, false)
     file_path = mktempdir(; cleanup = true)
     export_path = mktempdir(; cleanup = true)
     pf_path = mktempdir(; cleanup = true)
@@ -1052,7 +1055,10 @@ read_result_names(results, key::PSI.OptimizationContainerKey) =
 
     available_aux_variables = list_aux_variable_keys(results_ed)
     loss_factors_aux_var_key = PSI.AuxVarKey(PowerFlowLossFactors, ACBus)
-    initial_residual_aux_var_keys = [PSI.AuxVarKey(PowerFlowInitialResidualP, ACBus), PSI.AuxVarKey(PowerFlowInitialResidualQ, ACBus)]
+    initial_residual_aux_var_keys = [
+        PSI.AuxVarKey(PowerFlowInitialResidualP, ACBus),
+        PSI.AuxVarKey(PowerFlowInitialResidualQ, ACBus),
+    ]
 
     # here we check if the loss factors are stored in the results, the values are tested in PowerFlows.jl
     if calculate_loss_factors
@@ -1068,11 +1074,22 @@ read_result_names(results, key::PSI.OptimizationContainerKey) =
     else
         @test loss_factors_aux_var_key ∉ available_aux_variables
     end
+
     if calculate_initial_residual
         @test all(x in available_aux_variables for x in initial_residual_aux_var_keys)
         results = PSI.read_results_with_keys(results_ed, initial_residual_aux_var_keys)
         @test !isnothing(results[initial_residual_aux_var_keys[1]])
         @test !isnothing(results[initial_residual_aux_var_keys[2]])
+        # TODO: actually compare some values, like below. But what do I feed into the
+        # PowerFlowData constructor to create data? what's the setpoint?
+        #=
+        x0 = PF.calculate_x0(data, time_step)
+        residual(x0)
+        ps = results[initial_residual_aux_var_keys[1]]
+        qs = results[initial_residual_aux_var_keys[2]]
+        @test all(ps[time_step, i] == residual.Rv[2*i - 1] for i in 1:nbuses)
+        @test all(qs[time_step, i] == residual.Rv[2*i] for i in 1:nbuses)
+        =#
     else
         @test !(initial_residual_aux_var_keys[1] in available_aux_variables)
         @test !(initial_residual_aux_var_keys[2] in available_aux_variables)

@@ -17,6 +17,7 @@ using DataStructures
 import UUIDs
 using Random
 import Serialization
+using HiGHS
 
 const PM = PowerModels
 const PSY = PowerSystems
@@ -27,11 +28,12 @@ const IS = InfrastructureSystems
 const BASE_DIR = string(dirname(dirname(pathof(PowerSimulations))))
 const DATA_DIR = joinpath(BASE_DIR, "test/test_data")
 
-include(joinpath(BASE_DIR, "test/test_utils/common_operation_model.jl"))
-include(joinpath(BASE_DIR, "test/test_utils/model_checks.jl"))
-include(joinpath(BASE_DIR, "test/test_utils/mock_operation_models.jl"))
-include(joinpath(BASE_DIR, "test/test_utils/solver_definitions.jl"))
-include(joinpath(BASE_DIR, "test/test_utils/operations_problem_templates.jl"))
+# redundant with include("includes.jl") at top of runtests.jl.
+# include(joinpath(BASE_DIR, "test/test_utils/common_operation_model.jl"))
+# include(joinpath(BASE_DIR, "test/test_utils/model_checks.jl"))
+# include(joinpath(BASE_DIR, "test/test_utils/mock_operation_models.jl"))
+# include(joinpath(BASE_DIR, "test/test_utils/solver_definitions.jl"))
+# include(joinpath(BASE_DIR, "test/test_utils/operations_problem_templates.jl"))
 
 function build_simulation(
     output_dir::AbstractString,
